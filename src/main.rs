@@ -1,45 +1,49 @@
-mod es;
+mod kafka;
 
-use crate::es::{EventSourced, SourceEvent};
+use std::{thread, time};
 
-impl EventSourced<Self> for Book {
-    fn get_events(self) -> Vec<Box<dyn SourceEvent<Self>>> {
-        self.events
-    }
+use ::kafka::{
+    client::{FetchOffset, GroupOffsetStorage},
+    consumer::Consumer,
+};
+use serde::{Deserialize, Serialize};
 
-    fn apply(&mut self, ev: impl SourceEvent<Self>) {
-        ev.apply(self)
-    }
+use crate::kafka::BookKafkaRepository;
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum BookEvent {
+    Created(BookCreated),
+    PageAdded(PageAdded),
 }
 
-struct Book {
+pub struct Book {
     author: String,
     pages: Vec<String>,
-    events: Vec<Box<dyn SourceEvent<Book>>>,
+    events: Vec<BookEvent>,
 }
 
+impl BookEvent {
+    pub fn apply(&self, book: &mut Book) {
+        match self {
+            BookEvent::Created(ev) => book.author = ev.author.to_owned(),
+            BookEvent::PageAdded(ev) => {
+                book.pages.push(ev.content.to_owned());
+            }
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 pub struct BookCreated {
     author: String,
 }
-
+#[derive(Serialize, Deserialize, Debug)]
 pub struct PageAdded {
     content: String,
 }
 
-impl SourceEvent<Book> for BookCreated {
-    fn apply(&self, mut t: &mut Book) {
-        t.author = self.author.to_owned();
-    }
-}
-
-impl SourceEvent<Book> for PageAdded {
-    fn apply(&self, t: &mut Book) {
-        t.pages.push(self.content.to_owned());
-    }
-}
-
 impl Book {
-    pub fn from_events(events: Vec<Box<dyn SourceEvent<Book>>>) -> Book {
+    pub fn from_events(events: Vec<BookEvent>) -> Book {
         let mut book = Book {
             author: "".to_owned(),
             pages: vec![],
@@ -59,7 +63,7 @@ impl Book {
     }
 
     pub fn add_page(&mut self, page: String) {
-        self.events.push(Box::new(PageAdded {
+        self.events.push(BookEvent::PageAdded(PageAdded {
             content: page.to_owned(),
         }));
         self.pages.push(page);
@@ -67,46 +71,63 @@ impl Book {
 }
 
 fn main() {
-    let book_created = BookCreated {
+    let book_created = BookEvent::Created(BookCreated {
         author: "ds".to_owned(),
-    };
-    let page_added = PageAdded {
+    });
+    let page_added = BookEvent::PageAdded(PageAdded {
         content: "first page".to_owned(),
-    };
-    let page_added_2 = PageAdded {
+    });
+    let page_added_2 = BookEvent::PageAdded(PageAdded {
         content: "second page".to_owned(),
-    };
-    let events: Vec<Box<dyn SourceEvent<Book>>> = vec![
-        Box::new(book_created),
-        Box::new(page_added),
-        Box::new(page_added_2),
-    ];
-    let book = Book::from_events(events);
+    });
+    let events: Vec<BookEvent> = vec![book_created, page_added, page_added_2];
+    let mut book = Book::from_events(events);
 
-    println!("{} {}", book.author, book.pages.len());
+    book.add_page("third page".to_owned());
+
+    let repository = BookKafkaRepository::new(vec!["localhost:9092".to_owned()]);
+    repository.save(book);
+
+    let mut con = Consumer::from_hosts(vec!["localhost:9092".to_owned()])
+        .with_topic("books".to_owned())
+        .with_fallback_offset(FetchOffset::Earliest)
+        .with_offset_storage(GroupOffsetStorage::Kafka)
+        .create()
+        .expect("Could not connect to kafka broker");
+
+    loop {
+        thread::sleep(time::Duration::from_millis(1000));
+        let mss = con.poll().expect("msg");
+
+        for ms in mss.iter() {
+            for m in ms.messages() {
+                let ev: BookEvent = serde_json::from_slice(m.value).expect("msg");
+
+                println!("{}:{}@{}: {:?}", ms.topic(), ms.partition(), m.offset, ev);
+            }
+            let _ = con.consume_messageset(ms);
+        }
+        con.commit_consumed().expect("Error while commititng consumed");
+    }
 }
 
+#[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::{Book, BookCreated, BookEvent, PageAdded};
 
     #[test]
     fn sources_from_events() {
-        let book_created = BookCreated {
+        let book_created = BookEvent::Created(BookCreated {
             author: "ds".to_owned(),
-        };
-        let page_added = PageAdded {
+        });
+        let page_added = BookEvent::PageAdded(PageAdded {
             content: "first page".to_owned(),
-        };
-        let page_added_2 = PageAdded {
+        });
+        let page_added_2 = BookEvent::PageAdded(PageAdded {
             content: "second page".to_owned(),
-        };
-        let events: Vec<Box<dyn SourceEvent<Book>>> = vec![
-            Box::new(book_created),
-            Box::new(page_added),
-            Box::new(page_added_2),
-        ];
+        });
+        let events: Vec<BookEvent> = vec![book_created, page_added, page_added_2];
         let book = Book::from_events(events);
         assert_eq!(2, book.pages.len())
     }
-    
 }
