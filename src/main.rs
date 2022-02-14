@@ -17,6 +17,7 @@ pub enum BookEvent {
 }
 
 pub struct Book {
+    id: String,
     author: String,
     pages: Vec<String>,
     events: Vec<BookEvent>,
@@ -25,7 +26,10 @@ pub struct Book {
 impl BookEvent {
     pub fn apply(&self, book: &mut Book) {
         match self {
-            BookEvent::Created(ev) => book.author = ev.author.to_owned(),
+            BookEvent::Created(ev) => {
+                book.id = ev.id.to_owned();
+                book.author = ev.author.to_owned();
+            }
             BookEvent::PageAdded(ev) => {
                 book.pages.push(ev.content.to_owned());
             }
@@ -35,6 +39,7 @@ impl BookEvent {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct BookCreated {
+    id: String,
     author: String,
 }
 #[derive(Serialize, Deserialize, Debug)]
@@ -45,6 +50,7 @@ pub struct PageAdded {
 impl Book {
     pub fn from_events(events: Vec<BookEvent>) -> Book {
         let mut book = Book {
+            id: String::new(),
             author: "".to_owned(),
             pages: vec![],
             events: vec![],
@@ -54,8 +60,9 @@ impl Book {
         book
     }
 
-    pub fn new(author: String) -> Book {
+    pub fn new(id: String, author: String) -> Book {
         Book {
+            id,
             author,
             pages: vec![],
             events: vec![],
@@ -72,6 +79,7 @@ impl Book {
 
 fn main() {
     let book_created = BookEvent::Created(BookCreated {
+        id: "1".to_owned(),
         author: "ds".to_owned(),
     });
     let page_added = BookEvent::PageAdded(PageAdded {
@@ -107,7 +115,8 @@ fn main() {
             }
             let _ = con.consume_messageset(ms);
         }
-        con.commit_consumed().expect("Error while commititng consumed");
+        con.commit_consumed()
+            .expect("Error while commititng consumed");
     }
 }
 
@@ -118,6 +127,7 @@ mod tests {
     #[test]
     fn sources_from_events() {
         let book_created = BookEvent::Created(BookCreated {
+            id: "1".to_owned(),
             author: "ds".to_owned(),
         });
         let page_added = BookEvent::PageAdded(PageAdded {
