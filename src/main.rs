@@ -1,3 +1,4 @@
+mod book;
 mod kafka;
 
 use std::{thread, time};
@@ -6,97 +7,38 @@ use ::kafka::{
     client::{FetchOffset, GroupOffsetStorage},
     consumer::Consumer,
 };
-use serde::{Deserialize, Serialize};
 
-use crate::kafka::BookKafkaRepository;
-
-#[derive(Serialize, Deserialize, Debug)]
-pub enum BookEvent {
-    Created(BookCreated),
-    PageAdded(PageAdded),
-}
-
-pub struct Book {
-    id: String,
-    author: String,
-    pages: Vec<String>,
-    events: Vec<BookEvent>,
-}
-
-impl BookEvent {
-    pub fn apply(&self, book: &mut Book) {
-        match self {
-            BookEvent::Created(ev) => {
-                book.id = ev.id.to_owned();
-                book.author = ev.author.to_owned();
-            }
-            BookEvent::PageAdded(ev) => {
-                book.pages.push(ev.content.to_owned());
-            }
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct BookCreated {
-    id: String,
-    author: String,
-}
-#[derive(Serialize, Deserialize, Debug)]
-pub struct PageAdded {
-    content: String,
-}
-
-impl Book {
-    pub fn from_events(events: Vec<BookEvent>) -> Book {
-        let mut book = Book {
-            id: String::new(),
-            author: "".to_owned(),
-            pages: vec![],
-            events: vec![],
-        };
-
-        events.iter().for_each(|ev| ev.apply(&mut book));
-        book
-    }
-
-    pub fn new(id: String, author: String) -> Book {
-        Book {
-            id,
-            author,
-            pages: vec![],
-            events: vec![],
-        }
-    }
-
-    pub fn add_page(&mut self, page: String) {
-        self.events.push(BookEvent::PageAdded(PageAdded {
-            content: page.to_owned(),
-        }));
-        self.pages.push(page);
-    }
-}
+use crate::{
+    book::{Book, BookEvent},
+    kafka::BookKafkaRepository,
+};
 
 fn main() {
-    let book_created = BookEvent::Created(BookCreated {
-        id: "1".to_owned(),
-        author: "ds".to_owned(),
-    });
-    let page_added = BookEvent::PageAdded(PageAdded {
-        content: "first page".to_owned(),
-    });
-    let page_added_2 = BookEvent::PageAdded(PageAdded {
-        content: "second page".to_owned(),
-    });
-    let events: Vec<BookEvent> = vec![book_created, page_added, page_added_2];
-    let mut book = Book::from_events(events);
+    let kafka_brokers = vec!["localhost:9092".to_owned()];
+    let book_id = Book::new_id();
+    let mut repository = BookKafkaRepository::new(kafka_brokers.clone());
+    let mut book = get_book_or_create_new(&book_id, &repository);
+    generate_new_book_page(&mut book, &mut repository);
 
-    book.add_page("third page".to_owned());
+    listen_to_books_topic(kafka_brokers);
+}
 
-    let repository = BookKafkaRepository::new(vec!["localhost:9092".to_owned()]);
+fn get_book_or_create_new(id: &str, repository: &BookKafkaRepository) -> Book {
+    if let Some(book) = repository.get(id) {
+        book
+    } else {
+        Book::new(id.to_owned(), "Joe".to_owned())
+    }
+}
+
+fn generate_new_book_page(book: &mut Book, repository: &mut BookKafkaRepository) {
+    let next_page_number = book.pages.len() + 1;
+    book.add_page(("Page #".to_owned() + &next_page_number.to_string()).to_owned());
     repository.save(book);
+}
 
-    let mut con = Consumer::from_hosts(vec!["localhost:9092".to_owned()])
+fn listen_to_books_topic(brokers: Vec<String>) {
+    let mut con = Consumer::from_hosts(brokers.clone())
         .with_topic("books".to_owned())
         .with_fallback_offset(FetchOffset::Earliest)
         .with_offset_storage(GroupOffsetStorage::Kafka)
@@ -122,7 +64,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Book, BookCreated, BookEvent, PageAdded};
+    use crate::book::{Book, BookCreated, BookEvent, PageAdded};
 
     #[test]
     fn sources_from_events() {
