@@ -81,3 +81,25 @@ impl Book {
         self.events.clear()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::book::{Book, BookCreated, BookEvent, PageAdded};
+
+    #[test]
+    fn sources_from_events() {
+        let book_created = BookEvent::Created(BookCreated {
+            id: "1".to_owned(),
+            author: "ds".to_owned(),
+        });
+        let page_added = BookEvent::PageAdded(PageAdded {
+            content: "first page".to_owned(),
+        });
+        let page_added_2 = BookEvent::PageAdded(PageAdded {
+            content: "second page".to_owned(),
+        });
+        let events: Vec<BookEvent> = vec![book_created, page_added, page_added_2];
+        let book = Book::from_events(events);
+        assert_eq!(2, book.pages.len())
+    }
+}
